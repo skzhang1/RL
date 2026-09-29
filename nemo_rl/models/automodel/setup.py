@@ -972,10 +972,20 @@ def setup_model_and_optimizer(
         # p.grad-is-None check, so passing frozen params (e.g. the visual
         # encoder in text-only training) causes DCP to save unused state that
         # later fails to reshard on resume.
-        optimizer = optimizer_cls(
-            (p for p in model.parameters() if p.requires_grad),
-            **optimizer_kwargs,
-        )
+        if config.get("logra_cfg") is not None:
+            # Optional backend: leave dense model/optimizer construction unchanged.
+            from nemo_rl.models.automodel.logra import LoGRAConfig, LoGRAOptimizer
+
+            if tp_size != 1 or cp_size != 1 or is_moe_model or peft_config is not None:
+                raise ValueError("LoGRA currently supports dense HF models with FSDP, TP=CP=1, and no LoRA")
+            if not config["dtensor_cfg"]["automodel_kwargs"].get("force_hf"):
+                raise ValueError("LoGRA requires dtensor_cfg.automodel_kwargs.force_hf=true")
+            optimizer = LoGRAOptimizer(model, LoGRAConfig.model_validate(config["logra_cfg"]))
+        else:
+            optimizer = optimizer_cls(
+                (p for p in model.parameters() if p.requires_grad),
+                **optimizer_kwargs,
+            )
 
     # Initialize scheduler
     scheduler = None

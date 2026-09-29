@@ -37,7 +37,7 @@ Reference papers:
 from typing import Literal, Optional
 
 import torch
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from nemo_rl.algorithms.loss import ClippedPGLossConfig
 from nemo_rl.algorithms.utils import (
@@ -52,7 +52,10 @@ from nemo_rl.algorithms.utils import (
 class AdvEstimatorConfig(BaseModel, extra="allow"):
     """Configuration for advantage estimator (GRPO, GDPO, OPD, or Reinforce++)."""
 
-    name: Literal["grpo", "gdpo", "opd", "reinforce_plus_plus"] = "grpo"
+    name: Literal["grpo", "gdpo", "opd", "reinforce_plus_plus", "reinforce_running_baseline"] = "grpo"
+    # Optional single-response REINFORCE baseline; only previous batches contribute.
+    running_baseline_weight: float = Field(default=0.1, gt=0, le=1)
+    failure_reward: float = -0.01
     # GRPO specific
     normalize_rewards: bool = True
     use_leave_one_out_baseline: bool = True
@@ -74,6 +77,28 @@ class GAEConfig(BaseModel, extra="allow"):
     gae_lambda_policy: Optional[float] = None
     # Length-adaptive λ_policy = 1 - 1/(α·l). 0 = disabled.
     length_adaptive_alpha: float = 0.0
+
+
+class RunningBaselineAdvantageEstimator:
+    """Single-response REINFORCE with a past-batch baseline for transfer comparisons."""
+
+    def __init__(self, estimator_config: AdvEstimatorConfig):
+        self.weight = estimator_config.running_baseline_weight
+        self.failure_reward = estimator_config.failure_reward
+        self.baseline = 0.0
+
+    def compute_advantage(self, prompt_ids, rewards, mask, valid_mask=None, **kwargs):
+        valid = mask.bool().any(-1)
+        if valid_mask is not None:
+            valid &= valid_mask.bool()
+        if not torch.isfinite(rewards[valid]).all():
+            raise FloatingPointError("Nonfinite reward in running-baseline REINFORCE")
+        outcomes = torch.where(rewards >= 1.0, torch.ones_like(rewards),
+                               torch.full_like(rewards, self.failure_reward))
+        advantages = outcomes - self.baseline
+        if valid.any():
+            self.baseline = (1-self.weight)*self.baseline + self.weight*outcomes[valid].mean().item()
+        return advantages.unsqueeze(-1).expand(mask.shape)
 
 
 class GRPOAdvantageEstimator:

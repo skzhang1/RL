@@ -416,6 +416,9 @@ class DTensorPolicyWorkerV2Impl(
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         self.timer.start("train")
+        if self.cfg.get("record_train_memory"):
+            torch.cuda.reset_peak_memory_stats()
+        logra_metrics = {}
         if gbs is None:
             gbs = self.cfg["train_global_batch_size"]
         if mbs is None:
@@ -534,29 +537,49 @@ class DTensorPolicyWorkerV2Impl(
 
                 grad_norm: Optional[float | torch.Tensor] = None
                 if not eval_mode:
-                    grad_norm = scale_grads_and_clip_grad_norm(
-                        self.max_grad_norm,
-                        [self.model],
-                        norm_type=2.0,
-                        pp_enabled=False,
-                        device_mesh=self.device_mesh,
-                        moe_mesh=self.moe_mesh,
-                        ep_axis_name="ep"
-                        if self.moe_mesh is not None
-                        and "ep" in self.moe_mesh.mesh_dim_names
-                        else None,
-                        pp_axis_name=None,
-                        foreach=True,
-                        num_label_tokens=1,
-                        dp_group_size=self.dp_size * self.cp_size,
-                    )
-                    grad_norm = torch.tensor(
-                        grad_norm, device="cpu", dtype=torch.float32
-                    )
-                    warn_if_inf_grad_norm(grad_norm)
+                    if self.cfg.get("logra_cfg") is not None:
+                        # Optional controller; dense training retains the original path.
+                        from nemo_rl.models.automodel.logra_probe import control_step
 
-                    # Update parameters and the non-gradient MoE routing bias.
-                    self.optimizer.step()
+                        grad_norm = self.optimizer.prepare_update(
+                            process_group=self.dp_mesh.get_group(),
+                            normalization_tokens=int(global_valid_toks.item()),
+                        )
+                        grad_norm = torch.tensor(grad_norm, device="cpu", dtype=torch.float32)
+                        eos_ids = self.model.generation_config.eos_token_id
+                        if isinstance(eos_ids, int):
+                            eos_ids = [eos_ids]
+                        logra_metrics = control_step(
+                            self.model, self.optimizer, batch,
+                            temperature=self.sampling_params.temperature,
+                            compute_dtype=self.dtype,
+                            process_group=self.dp_mesh.get_group(),
+                            eos_token_ids=set(eos_ids),
+                        )
+                    else:
+                        grad_norm = scale_grads_and_clip_grad_norm(
+                            self.max_grad_norm,
+                            [self.model],
+                            norm_type=2.0,
+                            pp_enabled=False,
+                            device_mesh=self.device_mesh,
+                            moe_mesh=self.moe_mesh,
+                            ep_axis_name="ep"
+                            if self.moe_mesh is not None
+                            and "ep" in self.moe_mesh.mesh_dim_names
+                            else None,
+                            pp_axis_name=None,
+                            foreach=True,
+                            num_label_tokens=1,
+                            dp_group_size=self.dp_size * self.cp_size,
+                        )
+                        grad_norm = torch.tensor(
+                            grad_norm, device="cpu", dtype=torch.float32
+                        )
+                        warn_if_inf_grad_norm(grad_norm)
+
+                        # Update parameters and the non-gradient MoE routing bias.
+                        self.optimizer.step()
                     self._update_moe_gate_bias_if_supported()
 
                 losses.append(torch.tensor(mb_losses).sum().item())
@@ -579,6 +602,10 @@ class DTensorPolicyWorkerV2Impl(
                 dtype=self.dtype,
             )
 
+            metrics.update(logra_metrics)
+            if self.cfg.get("record_train_memory"):
+                metrics["memory/train_peak_allocated_gib"] = torch.cuda.max_memory_allocated() / 2**30
+                metrics["memory/train_allocated_gib"] = torch.cuda.memory_allocated() / 2**30
             self.timer.stop("train")
             return metrics
 

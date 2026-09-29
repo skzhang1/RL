@@ -36,6 +36,7 @@ from nemo_rl.algorithms.advantage_estimator import (
     GRPOAdvantageEstimator,
     OPDAdvantageEstimator,
     ReinforcePlusPlusAdvantageEstimator,
+    RunningBaselineAdvantageEstimator,
 )
 from nemo_rl.algorithms.logits_sampling_utils import (
     TrainingSamplingParams,
@@ -414,6 +415,8 @@ class GRPOSaveState:
     # SingleController only: exact last admitted dispatch batch. None preserves
     # compatibility with checkpoints that only recorded the trainer version.
     sampler_dispatch_index: Optional[int] = None
+    # Backward-compatible state for the opt-in single-response REINFORCE estimator.
+    reinforce_baseline: float = 0.0
 
 
 def _initial_grpo_save_state() -> GRPOSaveState:
@@ -633,24 +636,24 @@ def setup(
     _validate_multimodal_dedup_capability(master_config)
     _validate_seq_logprob_error_in_loss(master_config)
 
-    # Validation-only sampling is honored only on the NeMo-Gym vLLM rollout
-    # path; everywhere else validation must sample exactly like training.
+    # Independent validation sampling is supported by NeMo-Gym and sync vLLM.
     val_sampling_overridden = (
         generation_config["val_temperature"] != generation_config["temperature"]
         or generation_config["val_top_p"] != generation_config["top_p"]
         or generation_config["val_top_k"] != generation_config["top_k"]
     )
     if val_sampling_overridden:
-        assert generation_config["backend"] == "vllm" and should_use_nemo_gym(
-            master_config
+        assert generation_config["backend"] == "vllm" and (
+            should_use_nemo_gym(master_config)
+            or not generation_config["vllm_cfg"]["async_engine"]
         ), (
             "generation.val_temperature/val_top_p/val_top_k differing from the "
-            "train sampling params is only supported for vLLM NeMo-Gym rollouts."
+            "train sampling params requires synchronous vLLM or NeMo-Gym rollouts."
         )
         # The NeMo-Gym path only stamps temperature/top_p onto requests and
         # rejects any top_k at rollout time, so a val_top_k override can never
         # be honored — fail here instead of at the first validation step.
-        assert not generation_config["val_top_k"], (
+        assert not should_use_nemo_gym(master_config) or not generation_config["val_top_k"], (
             "generation.val_top_k is not supported: the NeMo-Gym rollout path "
             "only honors val_temperature/val_top_p. Leave val_top_k null."
         )
@@ -2571,7 +2574,11 @@ def _create_advantage_estimator(master_config: MasterConfig):
     adv_estimator_config = grpo_config.adv_estimator
 
     adv_estimator_name = adv_estimator_config.name
-    if adv_estimator_name == "gdpo":
+    if adv_estimator_name == "reinforce_running_baseline":
+        if master_config.data_plane["enabled"] or grpo_config.async_grpo.enabled:
+            raise ValueError("reinforce_running_baseline requires synchronous training with data_plane.enabled=false")
+        adv_estimator = RunningBaselineAdvantageEstimator(adv_estimator_config)
+    elif adv_estimator_name == "gdpo":
         adv_estimator = GDPOAdvantageEstimator(adv_estimator_config, loss_config)
         print("  ✓ Using GDPO advantage estimator (multi-reward)")
     elif adv_estimator_name == "grpo":
@@ -3038,6 +3045,8 @@ def _grpo_train_impl(
 
     # Initialize advantage estimator
     adv_estimator = _create_advantage_estimator(master_config)
+    if isinstance(adv_estimator, RunningBaselineAdvantageEstimator):
+        adv_estimator.baseline = grpo_save_state.reinforce_baseline
 
     # Run validation at the start if configured
     # TODO: Add validation with kv scales if needed
@@ -3923,6 +3932,8 @@ def _grpo_train_impl(
                     elif hasattr(grpo_save_state, "val_reward"):
                         delattr(grpo_save_state, "val_reward")
                     grpo_save_state.consumed_samples = consumed_samples
+                    if isinstance(adv_estimator, RunningBaselineAdvantageEstimator):
+                        grpo_save_state.reinforce_baseline = adv_estimator.baseline
 
                     full_metric_name = master_config.checkpointing["metric_name"]
                     if full_metric_name is not None:
@@ -4346,18 +4357,24 @@ def validate(
                     ),
                 )
             else:
-                val_batch, gen_metrics = run_multi_turn_rollout(
-                    policy_generation,
-                    val_batch,
-                    tokenizer,
-                    val_task_to_env,
-                    max_seq_len=master_config.policy["max_total_sequence_length"],
-                    max_rollout_turns=master_config.grpo.max_rollout_turns,
-                    greedy=False,
-                    deduplicate_multimodal_data=(
-                        master_config.grpo.deduplicate_multimodal_data
-                    ),
+                sampling_context = (
+                    policy_generation.validation_sampling()
+                    if isinstance(policy_generation, VllmGeneration)
+                    else nullcontext()
                 )
+                with sampling_context:
+                    val_batch, gen_metrics = run_multi_turn_rollout(
+                        policy_generation,
+                        val_batch,
+                        tokenizer,
+                        val_task_to_env,
+                        max_seq_len=master_config.policy["max_total_sequence_length"],
+                        max_rollout_turns=master_config.grpo.max_rollout_turns,
+                        greedy=False,
+                        deduplicate_multimodal_data=(
+                            master_config.grpo.deduplicate_multimodal_data
+                        ),
+                    )
 
             total_rewards.extend(val_batch["total_reward"].tolist())
             total_lengths.append(gen_metrics["mean_gen_tokens_per_sample"])
@@ -4712,6 +4729,8 @@ def async_grpo_train(
 
     # Initialize advantage estimator
     adv_estimator = _create_advantage_estimator(master_config)
+    if isinstance(adv_estimator, RunningBaselineAdvantageEstimator):
+        adv_estimator.baseline = grpo_save_state.reinforce_baseline
 
     # Calculate minimum buffer size from training requirements
     # In per-prompt buffer mode, one buffer entry is 1 prompt * num_generations_per_prompt
@@ -5807,6 +5826,8 @@ def async_grpo_train(
                     elif hasattr(grpo_save_state, "val_reward"):
                         delattr(grpo_save_state, "val_reward")
                     grpo_save_state.consumed_samples = consumed_samples
+                    if isinstance(adv_estimator, RunningBaselineAdvantageEstimator):
+                        grpo_save_state.reinforce_baseline = adv_estimator.baseline
 
                     full_metric_name = master_config.checkpointing["metric_name"]
                     if full_metric_name is not None:

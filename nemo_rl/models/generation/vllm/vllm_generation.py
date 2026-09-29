@@ -18,6 +18,8 @@ import os
 import time
 import warnings
 from collections import defaultdict
+from contextlib import contextmanager
+from collections.abc import Iterator
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -949,6 +951,29 @@ class VllmGeneration(GenerationInterface):
                 )
             )
         return futures
+
+    @contextmanager
+    def validation_sampling(self) -> Iterator[None]:
+        """Apply validation sampling to idle sync workers and restore it on every exit."""
+        if self.cfg["vllm_cfg"]["async_engine"]:
+            raise ValueError("validation_sampling requires synchronous vLLM")
+        keys = ("temperature", "top_p", "top_k")
+        train = {key: self.cfg[key] for key in keys}
+        validation = {key: self.cfg[f"val_{key}"] for key in keys}
+        if train == validation:
+            yield
+            return
+        try:
+            ray.get(self.worker_group.run_all_workers_single_data(
+                "set_sampling_profile", **validation,
+                run_rank_0_only_axes=["tensor_parallel", "pipeline_parallel"],
+            ))
+            yield
+        finally:
+            ray.get(self.worker_group.run_all_workers_single_data(
+                "set_sampling_profile", **train,
+                run_rank_0_only_axes=["tensor_parallel", "pipeline_parallel"],
+            ))
 
     @trace_fn(RLSpanGroup.GENERATION, "rl.vllm.generate")
     def generate(

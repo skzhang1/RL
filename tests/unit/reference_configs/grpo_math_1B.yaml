@@ -35,7 +35,9 @@ grpo:
   # Advantage Estimator Configuration
   # Options: "grpo" (default) or "reinforce_plus_plus"
   adv_estimator:
-    name: "grpo"  # Use "reinforce_plus_plus" for Reinforce++ estimator
+    name: "grpo"  # Also supports reinforce_plus_plus or reinforce_running_baseline
+    running_baseline_weight: 0.1 # EMA weight for past-batch REINFORCE baseline
+    failure_reward: -0.01 # Binary failure signal for reinforce_running_baseline
     normalize_rewards: ${grpo.normalize_rewards}
     use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
     reward_weights: null  # GDPO-specific: one weight per reward component
@@ -135,6 +137,10 @@ checkpointing:
   save_optimizer: true
 
 policy:
+  # Optional LoGRA gradient sketches (dense HF models, FSDP with TP=CP=1).
+  logra_cfg: null
+  # Report CUDA allocated-memory metrics for each policy-training call.
+  record_train_memory: false
   model_name: "Qwen/Qwen2.5-1.5B"
   tokenizer:
     name: ${policy.model_name} ## specify if you'd like to use a tokenizer different from the model's default

@@ -816,6 +816,10 @@ class BaseVllmGenerationWorker:
 
         return list(stop_set) if stop_set else None
 
+    def set_sampling_profile(self, *, temperature: float, top_p: float, top_k: Optional[int]) -> None:
+        """Switch a quiescent synchronous worker between train and validation sampling."""
+        self.cfg.update(temperature=temperature, top_p=top_p, top_k=top_k)
+
     def _build_sampling_params(
         self,
         *,

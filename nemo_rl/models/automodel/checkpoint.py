@@ -38,6 +38,8 @@ from torch.distributed.checkpoint._nested_dict import flatten_state_dict
 from torch.distributed.device_mesh import DeviceMesh
 from transformers import AutoTokenizer
 
+from nemo_rl.models.automodel.logra import LoGRAOptimizer
+
 from nemo_rl.utils.native_checkpoint import save_tokenizer_on_rank0
 
 logger = logging.getLogger(__name__)
@@ -345,12 +347,20 @@ class AutomodelCheckpointManager:
         )
 
         if optimizer_path and optimizer is not None:
-            self.checkpointer.save_optimizer(
-                optimizer=optimizer,
-                model=model,
-                weights_path=optimizer_path,
-                scheduler=scheduler,
-            )
+            if isinstance(optimizer, LoGRAOptimizer):
+                # AutoModel's generic optimizer wrapper skips frozen weights.
+                # LoGRA stores replicated row moments directly through DCP.
+                state: dict[str, Any] = {"optimizer": optimizer}
+                if scheduler is not None:
+                    state["scheduler"] = scheduler
+                dcp.save(state, checkpoint_id=os.path.join(optimizer_path, "logra"))
+            else:
+                self.checkpointer.save_optimizer(
+                    optimizer=optimizer,
+                    model=model,
+                    weights_path=optimizer_path,
+                    scheduler=scheduler,
+                )
 
         if tokenizer_path and tokenizer is not None:
             # Rank-0 guarded: passing tokenizer_path bypasses save_model()'s
@@ -453,9 +463,15 @@ class AutomodelCheckpointManager:
                             "or start a fresh run without restoring optimizer state."
                         )
                 del expected_state, optimizer_state
-            self.checkpointer.load_optimizer(
-                optimizer=optimizer,
-                model=model,
-                weights_path=optimizer_path,
-                scheduler=scheduler,
-            )
+            if isinstance(optimizer, LoGRAOptimizer):
+                state: dict[str, Any] = {"optimizer": optimizer}
+                if scheduler is not None:
+                    state["scheduler"] = scheduler
+                dcp.load(state, checkpoint_id=os.path.join(optimizer_path, "logra"))
+            else:
+                self.checkpointer.load_optimizer(
+                    optimizer=optimizer,
+                    model=model,
+                    weights_path=optimizer_path,
+                    scheduler=scheduler,
+                )

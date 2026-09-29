@@ -1,0 +1,101 @@
+defaults: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/RL/examples/configs/grpo_math_1B.yaml
+grpo:
+  num_prompts_per_step: 128
+  num_generations_per_prompt: 1
+  max_num_epochs: 5
+  max_num_steps: 200
+  normalize_rewards: false
+  use_leave_one_out_baseline: false
+  adv_estimator:
+    name: reinforce_running_baseline
+    running_baseline_weight: 0.1
+    failure_reward: -0.01
+  val_at_start: true
+  val_period: 5
+  max_val_samples: 500
+  val_batch_size: 500
+  val_num_generations_per_prompt: 4
+  seed: 1
+loss_fn:
+  reference_policy_kl_penalty: 0.0
+  disable_ppo_ratio: true
+  force_on_policy_ratio: false
+  use_importance_sampling_correction: true
+  truncated_importance_sampling_type: tis
+  truncated_importance_sampling_ratio: 2.0
+policy:
+  model_name: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/models/Qwen/Qwen2.5-Math-1.5B
+  train_global_batch_size: 128
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  max_total_sequence_length: 4096
+  logprob_chunk_size: 256
+  record_train_memory: true
+  dtensor_cfg:
+    activation_checkpointing: true
+    automodel_kwargs:
+      force_hf: true
+  sequence_packing:
+    enabled: false
+  max_grad_norm: 0.0
+  optimizer:
+    name: torch.optim.AdamW
+    kwargs:
+      foreach: false
+      fused: false
+      lr: 1.0e-06
+      weight_decay: 0.0
+      betas:
+      - 0.9
+      - 0.95
+      eps: 1.0e-08
+  scheduler:
+  - name: research.logra.schedule.controlled_adam_scheduler
+    kwargs:
+      steps: 300
+      warmup: 9
+      min_lr_ratio: 0.1
+  - milestones: []
+  generation:
+    temperature: 1.0
+    top_p: 1.0
+    val_temperature: 0.7
+    val_top_p: 0.7
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 4
+    vllm_cfg:
+      enforce_eager: true
+      use_tqdm: false
+      enable_vllm_metrics_logger: false
+      gpu_memory_utilization: 0.65
+data:
+  train:
+    dataset_name: ResponseDataset
+    data_path: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/data/train.jsonl
+    split_validation_size: 0
+  validation:
+    dataset_name: ResponseDataset
+    data_path: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/data/eval.jsonl
+    split_validation_size: 0
+  default:
+    env_name: historical_math
+    prompt_file: null
+    system_prompt_file: null
+    input_key: input
+    output_key: output
+env:
+  historical_math:
+    num_workers: 8
+checkpointing:
+  checkpoint_dir: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/results/dense-s1/checkpoints
+  save_period: 25
+  keep_top_k: 2
+logger:
+  log_dir: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/results/dense-s1/logs
+  tensorboard_enabled: true
+  monitor_gpus: false
+cluster:
+  gpus_per_node: 8
+  num_nodes: 1

@@ -16,6 +16,7 @@ from typing import Any, Literal, NotRequired, TypedDict, Union
 
 from pydantic import BaseModel
 
+from nemo_rl.models.automodel.logra import LoGRAConfig
 from nemo_rl.models.generation.interfaces import GenerationConfig
 from nemo_rl.models.policy.draft_config import Eagle3DraftConfig
 from nemo_rl.utils.checkpoint import PretrainedCheckpointConfig
@@ -647,6 +648,10 @@ class OnPolicyDistillationFullTransport(TypedDict):
 
 
 class PolicyConfig(TypedDict):
+    # Optional low-rank gradient backend; absent preserves the dense optimizer.
+    logra_cfg: NotRequired[LoGRAConfig | None]
+    # Opt-in per-call CUDA allocated-memory metrics for matched profiling.
+    record_train_memory: NotRequired[bool]
     model_name: str
     tokenizer: TokenizerConfig
     train_global_batch_size: int
