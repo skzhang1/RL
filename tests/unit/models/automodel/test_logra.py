@@ -267,3 +267,23 @@ def test_projection_seed_is_independent_of_checkpoint_wrappers():
     bare = "model.layers.0.self_attn.q_proj"
     wrapped = "_orig_mod.model.layers.0._checkpoint_wrapped_module.self_attn.q_proj"
     assert projection_seed(42, 3, bare) == projection_seed(42, 3, wrapped)
+
+
+def test_sketch_saved_activation_lifetime_and_repeated_backward():
+    import weakref
+
+    model = nn.Sequential(nn.Linear(7, 11, bias=False))
+    states = install_sketches(model, LoGRAConfig(rank=3, target_modules=["0"]))
+    x = torch.randn(2, 4, 7, requires_grad=True)
+    output = model(x)
+    projected = weakref.ref(output.grad_fn.saved_tensors[0])
+    loss = output.square().sum()
+    loss.backward(retain_graph=True)
+    first = states[0].sketch.clone()
+    assert projected() is not None
+    loss.backward()
+    torch.testing.assert_close(states[0].sketch, 2 * first)
+    # NeMo keeps loss tensors in its microbatch results after backward. Their
+    # graph objects must not keep every microbatch's projected activations alive.
+    assert projected() is None
+    assert loss.grad_fn is not None

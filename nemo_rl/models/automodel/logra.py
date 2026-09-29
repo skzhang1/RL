@@ -29,6 +29,7 @@ import torch
 import torch.distributed as dist
 from pydantic import BaseModel, Field
 from torch import Tensor, nn
+from torch.autograd.function import FunctionCtx
 from torch.distributed.tensor import DTensor, Shard
 from torch.utils.hooks import RemovableHandle
 
@@ -164,6 +165,28 @@ def kl_step_scale(prediction: float, *, budget: float, alpha_max: float) -> floa
     return min(alpha_max, math.sqrt(budget / prediction))
 
 
+class _AccumulateSketch(torch.autograd.Function):
+    """Keep projected activations in autograd-managed storage, freed after backward."""
+
+    @staticmethod
+    def forward(
+        ctx: FunctionCtx, output: Tensor, projected: Tensor, sketch: Tensor
+    ) -> Tensor:
+        ctx.save_for_backward(projected)
+        ctx.sketch = sketch
+        return output
+
+    @staticmethod
+    def backward(ctx: FunctionCtx, *grad_outputs: Tensor) -> tuple[Tensor, None, None]:
+        (gradient,) = grad_outputs
+        (projected,) = ctx.saved_tensors
+        sketch = ctx.sketch
+        with torch.no_grad():
+            contribution = gradient.reshape(-1, gradient.shape[-1]).T @ projected
+            sketch.add_(contribution.float())
+        return gradient, None, None
+
+
 @dataclass
 class SketchState:
     """Per-layer state stored outside autograd and explicitly reduced by the trainer."""
@@ -177,13 +200,11 @@ class SketchState:
 
     def forward_hook(
         self, module: nn.Module, inputs: tuple[Tensor, ...], output: Tensor
-    ) -> None:
+    ) -> Tensor | None:
         if not torch.is_grad_enabled() or not output.requires_grad:
             return
-        # Non-reentrant checkpoint replay reconstructs backward intermediates;
-        # its outputs are not differentiated a second time.
-        if torch._C._current_graph_task_id() != -1:
-            return
+        # Autograd owns projected activation storage. Checkpoint replay must
+        # recreate the same saved tensors; only the original graph runs backward.
         with torch.no_grad():
             activation = inputs[0]
             projected = (
@@ -191,12 +212,7 @@ class SketchState:
                 @ self.projection.to(activation.dtype).T
             )
 
-        def accumulate(gradient: Tensor) -> None:
-            with torch.no_grad():
-                contribution = gradient.reshape(-1, gradient.shape[-1]).T @ projected
-                self.sketch.add_(contribution.float())
-
-        output.register_hook(accumulate)
+        return _AccumulateSketch.apply(output, projected, self.sketch)
 
 
 def install_sketches(model: nn.Module, config: LoGRAConfig) -> list[SketchState]:
@@ -400,7 +416,9 @@ class LoGRAOptimizer(torch.optim.Optimizer):
     def step(self, closure: None = None, *, alpha: float | None = None) -> None: ...
 
     @overload
-    def step(self, closure: Callable[[], float], *, alpha: float | None = None) -> float: ...
+    def step(
+        self, closure: Callable[[], float], *, alpha: float | None = None
+    ) -> float: ...
 
     def step(
         self, closure: Callable[[], float] | None = None, *, alpha: float | None = None
