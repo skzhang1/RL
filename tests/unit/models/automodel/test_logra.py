@@ -287,3 +287,43 @@ def test_sketch_saved_activation_lifetime_and_repeated_backward():
     # graph objects must not keep every microbatch's projected activations alive.
     assert projected() is None
     assert loss.grad_fn is not None
+
+
+def test_bfloat16_probe_factor_products_match_frozen_reference():
+    import importlib.util
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+    from torch.autograd import forward_ad
+    from nemo_rl.models.automodel.logra_probe import factorized_direction
+
+    if "LOGRA_REFERENCE_ROOT" not in os.environ:
+        pytest.skip("Original LoGRA snapshot not available")
+    source = Path(os.environ["LOGRA_REFERENCE_ROOT"]) / "rpga/kl_probe.py"
+    spec = importlib.util.spec_from_file_location("original_kl_probe", source)
+    reference = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reference)
+    torch.manual_seed(12)
+    model = nn.Linear(19, 11, bias=False, dtype=torch.bfloat16)
+    x = torch.randn(2, 3, 19, dtype=torch.bfloat16)
+    projection = torch.randn(4, 19)
+    direction = torch.randn(11, 4)
+    legacy_layer = SimpleNamespace(A=projection, last_u=direction)
+    handle = model.register_forward_hook(
+        reference._make_tangent_hook(legacy_layer, 1.0, {})
+    )
+    with torch.no_grad(), forward_ad.dual_level():
+        expected = forward_ad.unpack_dual(model(x)).tangent.clone()
+    handle.remove()
+    optimizer = SimpleNamespace(
+        layers=[SimpleNamespace(module=model, projection=projection)],
+        directions=[direction],
+    )
+    with (
+        torch.no_grad(),
+        forward_ad.dual_level(),
+        factorized_direction(optimizer),
+        torch.autocast("cpu", dtype=torch.bfloat16),
+    ):
+        actual = forward_ad.unpack_dual(model(x)).tangent.clone()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)

@@ -40,6 +40,7 @@ grpo:
     name: "grpo"  # Also supports reinforce_plus_plus or reinforce_running_baseline
     running_baseline_weight: 0.1 # EMA weight for past-batch REINFORCE baseline
     failure_reward: -0.01 # Binary failure signal for reinforce_running_baseline
+    response_length_reference: null # Optional reference_length/response_length weight
     normalize_rewards: ${grpo.normalize_rewards}
     use_leave_one_out_baseline: ${grpo.use_leave_one_out_baseline}
     minus_baseline: true  # Reinforce++-baseline specific: subtract per-prompt mean baseline

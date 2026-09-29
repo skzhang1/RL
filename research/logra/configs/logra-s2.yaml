@@ -10,6 +10,7 @@ grpo:
     name: reinforce_running_baseline
     running_baseline_weight: 0.1
     failure_reward: -0.01
+    response_length_reference: 1024.0
   val_at_start: true
   val_period: 5
   max_val_samples: 500
@@ -90,11 +91,11 @@ env:
   historical_math:
     num_workers: 8
 checkpointing:
-  checkpoint_dir: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/results/logra-s2/checkpoints
+  checkpoint_dir: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/results_lengthnorm/logra-s2/checkpoints
   save_period: 25
   keep_top_k: 2
 logger:
-  log_dir: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/results/logra-s2/logs
+  log_dir: /lustre/fs12/portfolios/llmservice/projects/llmservice_fm_vision/users/shaokunz/logra_transfer_20260928/results_lengthnorm/logra-s2/logs
   tensorboard_enabled: true
   monitor_gpus: false
 cluster:

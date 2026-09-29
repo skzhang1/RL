@@ -42,10 +42,12 @@ def factorized_direction(optimizer: LoGRAOptimizer) -> Iterator[None]:
         ) -> Tensor:
             primal, tangent = forward_ad.unpack_dual(output)
             activation = forward_ad.unpack_dual(inputs[0]).primal
-            delta = (
-                -(activation @ projection.to(activation.dtype).T)
-                @ direction.to(activation.dtype).T
-            )
+            # The historical probe computes factor products in FP32, then
+            # casts the tangent to the layer output dtype. Preserve this even
+            # when the HF forward runs inside an autocast context.
+            with torch.autocast(device_type=activation.device.type, enabled=False):
+                delta = -((activation.float() @ projection.T) @ direction.T)
+            delta = delta.to(primal.dtype)
             tangent = delta if tangent is None else tangent + delta
             return forward_ad.make_dual(primal, tangent)
 

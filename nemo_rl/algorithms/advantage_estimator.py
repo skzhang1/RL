@@ -56,6 +56,7 @@ class AdvEstimatorConfig(BaseModel, extra="allow"):
     # Optional single-response REINFORCE baseline; only previous batches contribute.
     running_baseline_weight: float = Field(default=0.1, gt=0, le=1)
     failure_reward: float = -0.01
+    response_length_reference: float | None = Field(default=None, gt=0)
     # GRPO specific
     normalize_rewards: bool = True
     use_leave_one_out_baseline: bool = True
@@ -85,6 +86,7 @@ class RunningBaselineAdvantageEstimator:
     def __init__(self, estimator_config: AdvEstimatorConfig):
         self.weight = estimator_config.running_baseline_weight
         self.failure_reward = estimator_config.failure_reward
+        self.response_length_reference = estimator_config.response_length_reference
         self.baseline = 0.0
 
     def compute_advantage(self, prompt_ids, rewards, mask, valid_mask=None, **kwargs):
@@ -98,6 +100,11 @@ class RunningBaselineAdvantageEstimator:
         advantages = outcomes - self.baseline
         if valid.any():
             self.baseline = (1-self.weight)*self.baseline + self.weight*outcomes[valid].mean().item()
+        if self.response_length_reference is not None:
+            # The historical loss weights each response by reference_length/L.
+            # Apply this after updating the baseline so length does not bias it.
+            lengths = mask.to(advantages.dtype).sum(-1).clamp_min(1)
+            advantages = advantages * (self.response_length_reference / lengths)
         return advantages.unsqueeze(-1).expand(mask.shape)
 
 
