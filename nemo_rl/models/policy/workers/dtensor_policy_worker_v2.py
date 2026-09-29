@@ -602,10 +602,18 @@ class DTensorPolicyWorkerV2Impl(
                 dtype=self.dtype,
             )
 
-            metrics.update(logra_metrics)
+            extra_metrics = dict(logra_metrics)
             if self.cfg.get("record_train_memory"):
-                metrics["memory/train_peak_allocated_gib"] = torch.cuda.max_memory_allocated() / 2**30
-                metrics["memory/train_allocated_gib"] = torch.cuda.memory_allocated() / 2**30
+                extra_metrics["memory/train_peak_allocated_gib"] = torch.cuda.max_memory_allocated() / 2**30
+                extra_metrics["memory/train_allocated_gib"] = torch.cuda.memory_allocated() / 2**30
+            # LMPolicy retains all_mb_metrics and GRPO sums its per-worker values.
+            # Divide shared metrics by worker count; also keep each GPU's memory.
+            world_size = torch.distributed.get_world_size()
+            rank = torch.distributed.get_rank()
+            for key, value in extra_metrics.items():
+                metrics["all_mb_metrics"][key] = [value / world_size]
+                if key.startswith("memory/"):
+                    metrics["all_mb_metrics"][f"{key}/rank_{rank}"] = [value]
             self.timer.stop("train")
             return metrics
 
