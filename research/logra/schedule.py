@@ -18,19 +18,27 @@ import math
 import torch
 
 
-def controlled_adam_scheduler(
-    optimizer: torch.optim.Optimizer, *, steps: int, warmup: int, min_lr_ratio: float
-) -> torch.optim.lr_scheduler.LambdaLR:
-    """Match the actual controlled experiment rather than the HF scheduler default."""
-    if not 0 < warmup < steps or not 0 <= min_lr_ratio <= 1:
-        raise ValueError("Invalid controlled-math schedule")
+class ControlledAdamScheduler(torch.optim.lr_scheduler.LambdaLR):
+    """Historical schedule exposed as a class for NeMo's Hydra loader."""
 
-    def factor(index: int) -> float:
-        if index < warmup:
-            return (index + 1) / warmup
-        progress = min((index - warmup + 1) / (steps - warmup), 1.0)
-        return (
-            min_lr_ratio + (1 - min_lr_ratio) * (1 + math.cos(math.pi * progress)) / 2
-        )
+    def __init__(
+        self,
+        optimizer: torch.optim.Optimizer,
+        *,
+        steps: int,
+        warmup: int,
+        min_lr_ratio: float,
+    ) -> None:
+        if not 0 < warmup < steps or not 0 <= min_lr_ratio <= 1:
+            raise ValueError("Invalid controlled-math schedule")
 
-    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+        def factor(index: int) -> float:
+            if index < warmup:
+                return (index + 1) / warmup
+            progress = min((index - warmup + 1) / (steps - warmup), 1.0)
+            return (
+                min_lr_ratio
+                + (1 - min_lr_ratio) * (1 + math.cos(math.pi * progress)) / 2
+            )
+
+        super().__init__(optimizer, factor)

@@ -51,7 +51,7 @@ policy:
       - 0.95
       eps: 1.0e-08
   scheduler:
-  - name: research.logra.schedule.controlled_adam_scheduler
+  - name: research.logra.schedule.ControlledAdamScheduler
     kwargs:
       steps: 300
       warmup: 9
