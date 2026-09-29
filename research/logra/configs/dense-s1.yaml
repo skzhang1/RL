@@ -38,7 +38,7 @@ policy:
       force_hf: true
   sequence_packing:
     enabled: false
-  max_grad_norm: 0.0
+  max_grad_norm: null
   optimizer:
     name: torch.optim.AdamW
     kwargs:
