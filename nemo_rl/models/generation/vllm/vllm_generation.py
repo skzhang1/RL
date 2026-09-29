@@ -955,14 +955,14 @@ class VllmGeneration(GenerationInterface):
     @contextmanager
     def validation_sampling(self) -> Iterator[None]:
         """Apply validation sampling to idle sync workers and restore it on every exit."""
-        if self.cfg["vllm_cfg"]["async_engine"]:
-            raise ValueError("validation_sampling requires synchronous vLLM")
         keys = ("temperature", "top_p", "top_k")
         train = {key: self.cfg[key] for key in keys}
         validation = {key: self.cfg[f"val_{key}"] for key in keys}
         if train == validation:
             yield
             return
+        if self.cfg["vllm_cfg"]["async_engine"]:
+            raise ValueError("validation_sampling requires synchronous vLLM")
         try:
             ray.get(self.worker_group.run_all_workers_single_data(
                 "set_sampling_profile", **validation,

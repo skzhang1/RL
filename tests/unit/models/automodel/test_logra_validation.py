@@ -28,12 +28,13 @@ def test_validation_sampling_restores_training_after_failure():
     assert calls[1].kwargs["top_p"] == 1.0
 
 
-def test_default_validation_does_not_touch_workers():
+@pytest.mark.parametrize("async_engine", [False, True])
+def test_default_validation_does_not_touch_workers(async_engine):
     from nemo_rl.models.generation.vllm.vllm_generation import VllmGeneration
 
     generation = VllmGeneration.__new__(VllmGeneration)
     generation.cfg = {
-        "vllm_cfg": {"async_engine": False},
+        "vllm_cfg": {"async_engine": async_engine},
         "temperature": 1.0,
         "top_p": 1.0,
         "top_k": None,
@@ -44,4 +45,24 @@ def test_default_validation_does_not_touch_workers():
     generation.worker_group = MagicMock()
     with generation.validation_sampling():
         pass
+    generation.worker_group.run_all_workers_single_data.assert_not_called()
+
+
+def test_async_validation_override_rejected_before_touching_workers():
+    from nemo_rl.models.generation.vllm.vllm_generation import VllmGeneration
+
+    generation = VllmGeneration.__new__(VllmGeneration)
+    generation.cfg = {
+        "vllm_cfg": {"async_engine": True},
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": None,
+        "val_temperature": 0.7,
+        "val_top_p": 0.7,
+        "val_top_k": None,
+    }
+    generation.worker_group = MagicMock()
+    with pytest.raises(ValueError, match="requires synchronous vLLM"):
+        with generation.validation_sampling():
+            pytest.fail("Unsupported override entered validation")
     generation.worker_group.run_all_workers_single_data.assert_not_called()
